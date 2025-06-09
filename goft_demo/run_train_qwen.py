@@ -75,7 +75,7 @@ def main():
     base = AutoModelForCausalLM.from_pretrained(
         args.model_dir,
         trust_remote_code=True,
-        torch_dtype=torch.float16 if (args.fp16 and device == "cuda") else torch.float32,
+        torch_dtype=torch.float32,
         low_cpu_mem_usage=True,
         device_map=None)
 
@@ -89,6 +89,23 @@ def main():
     print(f"model:{model}")
 
     model.to(device)
+
+    # 类型检查：强制所有内容变为fp32
+    for n, p in model.named_parameters():
+        if p.device != torch.device(device):
+            p.data = p.data.to(device)
+        if p.dtype != torch.float32:
+            p.data = p.data.float()
+
+    # 控制只微调正交部分（Givens）对应的参数
+    for name, param in model.named_parameters():
+        if "givens_" in name:              # GOFT 旋转角 / scaler
+            param.requires_grad_(True)
+        elif ".bias" in name and cfg.bias == "givens_only":
+            param.requires_grad_(True)
+        else:
+            param.requires_grad_(False)
+    
     model.print_trainable_parameters()
 
     ds_train = build_dataset(tok, args.max_len)
@@ -101,7 +118,7 @@ def main():
         learning_rate=args.lr,
         logging_steps=10,
         save_strategy="no",
-        fp16=args.fp16 and device == "cuda",
+        fp16=False,
         bf16=False,
         gradient_accumulation_steps=1,
         report_to="none",
