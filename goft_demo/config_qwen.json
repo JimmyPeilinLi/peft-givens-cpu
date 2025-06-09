@@ -1,0 +1,17 @@
+{
+  "peft_type": "GIVENS",
+  "task_type": "CAUSAL_LM",
+
+  "strict_oft": true,
+  "fast_config": false,
+  "no_scaling": false,
+  "beta": 1.0,
+  "init_givens_weights": true,
+
+  "target_modules": [
+    "q_proj", "k_proj", "v_proj", "o_proj",
+    "gate_proj", "up_proj", "down_proj"
+  ],
+  "bias": "givens_only",
+  "modules_to_save": ["lm_head"]
+}
