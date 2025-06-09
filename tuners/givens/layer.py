@@ -398,6 +398,8 @@ class Linear(nn.Module, GivensLayer):
                 if active_adapter in self.givens_scaler.keys():
                     x = x * self.givens_scaler[active_adapter]
 
+                x = x.to(base_layer.weight.dtype) # to fit the fp16 (Half)
+
                 result = F.linear(x, transpose(base_layer.weight, self.fan_in_fan_out), bias=base_layer.bias)
 
                     # print(result)

@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Union
 
 from peft.config import PeftConfig
-from peft.utils import PeftType
+# from peft.utils import PeftType
+from peft_givens_cpu.utils.peft_types import PeftType
 
 
 @dataclass

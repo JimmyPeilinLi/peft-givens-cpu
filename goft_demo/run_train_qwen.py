@@ -19,7 +19,6 @@ from peft_givens_cpu.mapping import get_peft_model, get_peft_config
 from peft_givens_cpu.tuners.givens import GivensConfig
 
 
-# ---------- 参数 ----------
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model_dir",
@@ -37,7 +36,6 @@ def parse_args():
     return ap.parse_args()
 
 
-# ---------- 数据 ----------
 def build_dataset(tokenizer, max_len):
     """
     为了离线演示，使用 datasets 自带的 `wikitext`：若缺网，将 fallback
@@ -64,13 +62,10 @@ def build_dataset(tokenizer, max_len):
                "labels": ids.copy()} for ids in enc["input_ids"]]
     return ds_enc
 
-
-# ---------- 主流程 ----------
 def main():
     args = parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # 1) 加载 tokenizer / 模型
     tok = AutoTokenizer.from_pretrained(
         args.model_dir,
         trust_remote_code=True)
@@ -80,26 +75,25 @@ def main():
     base = AutoModelForCausalLM.from_pretrained(
         args.model_dir,
         trust_remote_code=True,
-        torch_dtype=torch.float16 if (args.fp16 and device == "cuda") else
-                     torch.float32,
+        torch_dtype=torch.float16 if (args.fp16 and device == "cuda") else torch.float32,
         low_cpu_mem_usage=True,
-        device_map=None)     # 显式 later `.to(device)`
+        device_map=None)
 
-    # 2) 创建 GivensConfig
+    if len(tok) != base.get_input_embeddings().num_embeddings:
+        base.resize_token_embeddings(len(tok))
+
     with open(args.config, "r", encoding="utf-8") as f:
         cfg_dict = json.load(f)
     cfg = get_peft_config(cfg_dict)
     model = get_peft_model(base, cfg)
+    print(f"model:{model}")
 
-    model.resize_token_embeddings(len(tok))
     model.to(device)
     model.print_trainable_parameters()
 
-    # 3) 数据
     ds_train = build_dataset(tok, args.max_len)
     collator = DataCollatorForLanguageModeling(tok, mlm=False)
 
-    # 4) HF Trainer
     training_args = TrainingArguments(
         output_dir="out_qwen_demo",
         per_device_train_batch_size=args.bs,
@@ -120,9 +114,9 @@ def main():
         eval_dataset=None,
         data_collator=collator)
 
+    print("---------------------START TRAINING----------------------")
     trainer.train()
 
-    # 5) merge & quick sanity
     merged = model.merge_and_unload()
     merged.to(device).eval()
     with torch.no_grad():
