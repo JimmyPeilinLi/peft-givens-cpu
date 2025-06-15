@@ -26,6 +26,14 @@ from peft.tuners.tuners_utils import BaseTunerLayer
 from transformers.pytorch_utils import Conv1D
 from peft.utils.other import transpose
 
+# try:
+#     from peft.tuners.givens.ext_cpu import rot_autograd as _rot_native
+#     _HAS_CPU_ROT = True
+# except (ImportError, OSError):
+#     _HAS_CPU_ROT = False
+
+from .ext_cpu import rot_autograd as _rot_native
+_HAS_CPU_ROT = True
 
 class GivensLayer(BaseTunerLayer):
     # All names of layers that may contain (trainable) adapter weights
@@ -390,10 +398,24 @@ class Linear(nn.Module, GivensLayer):
                 # print(rot_weight)
                 # result = F.linear(x.to(rot_weight.dtype), rot_weight.T)
                 # result = result.to(previous_dtype)
+                # 单词旋转部分，主要用cpu优化这部分
                 for cos_v, sin_v in zip(cos_list, sin_list):
-                    x_cos = x
-                    x_sin = torch.stack((-x[...,1::2], x[...,::2]), dim=-1).reshape(x.shape)
-                    x = x_cos * cos_v + x_sin * sin_v
+                    # print(f"current_device: {x.device.type}")
+                    # print(f"_HAS_CPU_ROT: {_HAS_CPU_ROT}")
+                    if _HAS_CPU_ROT and x.device.type == "cpu":
+                        # ---------- 兼容 3D 形状 ----------
+                        orig_shape = x.shape                 # (B, S, D) 或 (B, D)
+                        if x.dim() > 2:                      # 展平成 2D
+                            x_flat = x.reshape(-1, self.in_features)
+                            x_flat = _rot_native(x_flat, cos_v, sin_v)
+                            x = x_flat.reshape(orig_shape)   # 还原形状
+                        else:
+                            x = _rot_native(x, cos_v, sin_v)
+                    else:
+                        raise ImportError("CPU_ROT模块导入失败")
+                        x_cos = x
+                        x_sin = torch.stack((-x[...,1::2], x[...,::2]), dim=-1).reshape(x.shape)
+                        x = x_cos * cos_v + x_sin * sin_v
                 
                 if active_adapter in self.givens_scaler.keys():
                     x = x * self.givens_scaler[active_adapter]
