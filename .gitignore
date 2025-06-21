@@ -3,3 +3,4 @@ models/
 tuners/givens/ext_cpu/build
 *egg-info
 ESC_pure_mind_gen_ER.json
+log_cpu

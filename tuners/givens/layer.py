@@ -412,7 +412,7 @@ class Linear(nn.Module, GivensLayer):
                         else:
                             x = _rot_native(x, cos_v, sin_v)
                     else:
-                        raise ImportError("CPU_ROT模块导入失败")
+                        # raise ImportError("CPU_ROT模块导入失败") # only for test, hard coding
                         x_cos = x
                         x_sin = torch.stack((-x[...,1::2], x[...,::2]), dim=-1).reshape(x.shape)
                         x = x_cos * cos_v + x_sin * sin_v

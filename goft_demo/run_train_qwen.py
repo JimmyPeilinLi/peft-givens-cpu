@@ -19,6 +19,35 @@ from transformers import (AutoTokenizer, AutoModelForCausalLM,
 from peft_givens_cpu.mapping import get_peft_model, get_peft_config
 from peft_givens_cpu.tuners.givens import GivensConfig
 
+torch.set_num_threads(120)          # 推理/训练线程
+torch.set_num_interop_threads(2)    # 任务调度线程
+
+print("intra-op threads:", torch.get_num_threads())
+print("interop threads:", torch.get_num_interop_threads())
+
+os.environ["OMP_NUM_THREADS"]  = "120"
+os.environ["MKL_NUM_THREADS"]  = "120"
+
+from torch.profiler import profile, record_function, ProfilerActivity
+
+from transformers.trainer_callback import TrainerCallback
+from torch.profiler import profile, record_function, ProfilerActivity, schedule, tensorboard_trace_handler
+
+class TorchProfilerCallback(TrainerCallback):
+    def __init__(self, logdir="/home/lpl/peft_givens_cpu/log_cpu"):
+        print(f"[Profiler] writing trace to -> {os.path.abspath(logdir)}")
+        self.prof = profile(
+            activities=[ProfilerActivity.CPU],
+            schedule=schedule(wait=0, warmup=0, active=5, repeat=1),
+            on_trace_ready=tensorboard_trace_handler(logdir))
+        self.prof.__enter__()   # 手动进入上下文
+
+    def on_step_end(self, args, state, control, **kwargs):
+        self.prof.step()        # 每个训练 step 调一次
+
+    def on_train_end(self, args, state, control, **kwargs):
+        self.prof.__exit__(None, None, None)  # 收尾写文件
+
 
 def parse_args():
     ap = argparse.ArgumentParser()
@@ -37,31 +66,68 @@ def parse_args():
     ap.add_argument("--fp16", action="store_true", help="在 GPU 上用 fp16 训练")
     return ap.parse_args()
 
-
-def build_dataset(tokenizer, max_len):
+def build_dataset(tokenizer, max_len: int,
+                  json_path: str = "/home/lpl/peft_givens_cpu/ESC_pure_mind_gen_ER.json"
+                 ) -> List[Dict[str, List[int]]]:
     """
-    为了离线演示，使用 datasets 自带的 `wikitext`：若缺网，将 fallback
-    到脚本内置的两行文本。
-    """
-    try:
-        ds = load_dataset("wikitext", "wikitext-2-raw-v1",
-                          split="train[:1%]", cache_dir="~/.cache/datasets")
-        text_list = ds["text"]
-    except Exception:
-        text_list = [
-            "ChatGPT is a large language model trained by OpenAI.",
-            "Givens rotations are useful in numerical linear algebra."
-        ]
+    读取 ESC 纯精神支持对话数据集（JSON 格式），
+    仅保留 utterance 中的 seeker→supporter 句对。
 
-    enc = tokenizer(
-        text_list,
-        truncation=True,
-        padding="max_length",
-        max_length=max_len,
-        return_tensors=None,
-    )
-    ds_enc = [{"input_ids": ids,
-               "labels": ids.copy()} for ids in enc["input_ids"]]
+    参数
+    ----
+    tokenizer : transformers.PreTrainedTokenizer
+        用于将文本转换为 token ID 的分词器。
+    max_len : int
+        句子最大长度（超过则截断，不足则 pad）。
+    json_path : str
+        JSON 文件路径，默认指向 `/home/lpl/peft_givens_cpu/ESC_pure_mind_gen_ER.json`。
+
+    返回
+    ----
+    List[Dict[str, List[int]]]
+        每个元素包含 `input_ids`（seeker）和 `labels`（supporter）。
+    """
+    pairs = []  # (seeker, supporter)
+
+    # ---------- 读取并解析 JSON ----------
+    with open(json_path, "r", encoding="utf-8") as f:
+        raw_data = json.load(f)
+
+    # 顶级键类似 "Qwen0.txt"、"Qwen1.txt" ...
+    for file_block in raw_data.values():
+        for item in file_block:
+            utt = item.get("utterance", {})
+            seeker = utt.get("seeker", "").strip().rstrip(" ,\"")
+            supporter = utt.get("supporter", "").strip().rstrip(" ,\"")
+            if seeker and supporter:
+                pairs.append((seeker, supporter))
+
+        if not pairs:
+            raise ValueError("未提取到有效句对")
+
+    # ---------- 分词编码 ----------
+    ds_enc = []
+    for seeker, supporter in pairs:
+        enc_inp = tokenizer(
+            seeker,
+            truncation=True,
+            padding="max_length",
+            max_length=max_len,
+            return_tensors=None,
+        )
+        enc_out = tokenizer(
+            supporter,
+            truncation=True,
+            padding="max_length",
+            max_length=max_len,
+            return_tensors=None,
+        )
+        # 只需取列表中的第一条（因为 return_tensors=None）
+        ds_enc.append({
+            "input_ids": enc_inp["input_ids"],
+            "labels": enc_out["input_ids"]
+        })
+
     return ds_enc
 
 def main():
@@ -128,6 +194,8 @@ def main():
         fp16=False,
         bf16=False,
         no_cuda=True,
+        dataloader_num_workers=4, # 小规模并行加在数据，不大量fork worker
+        max_steps=10,
         gradient_accumulation_steps=1,
         report_to="none",
         disable_tqdm=False)
@@ -137,17 +205,22 @@ def main():
         args=training_args,
         train_dataset=ds_train,
         eval_dataset=None,
-        data_collator=collator)
+        data_collator=collator,
+        callbacks=[TorchProfilerCallback("/home/lpl/peft_givens_cpu/log_cpu")],
+    )
 
     print("---------------------START TRAINING----------------------")
+    # with profile(activities=[ProfilerActivity.CPU],
+    #          schedule=torch.profiler.schedule(wait=0, warmup=1, active=3),
+    #          on_trace_ready=torch.profiler.tensorboard_trace_handler("/home/lpl/peft_givens_cpu/log_cpu")) as prof: # 改用callback类
     trainer.train()
 
     # merged = model.merge_and_unload()
     model.to(device).eval()
     with torch.no_grad():
-        prompt = "Givens rotations"
+        prompt = "I feel sad today, my mother punish me because of low grade."
         inp = tok(prompt, return_tensors="pt").to(device)
-        out = model.generate(**inp, max_new_tokens=16)
+        out = model.generate(**inp, max_new_tokens=100)
         print("\n▶︎  小测试: ", tok.decode(out[0], skip_special_tokens=True))
 
 
