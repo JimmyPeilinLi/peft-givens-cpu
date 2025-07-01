@@ -1,0 +1,10 @@
+{
+    "peft_type": "LORA",
+    "task_type": "CAUSAL_LM",
+    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "w1", "w2"],
+    "r": 8,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "bias": "none"
+  }
+  

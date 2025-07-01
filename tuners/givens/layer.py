@@ -32,8 +32,12 @@ from peft.utils.other import transpose
 # except (ImportError, OSError):
 #     _HAS_CPU_ROT = False
 
-from .ext_cpu import rot_autograd as _rot_native
+from .ext_cpu import (
+    rot_autograd as _rot_native,
+    rot_stack_autograd as _rot_stack_native
+)
 _HAS_CPU_ROT = True
+_HAS_CPU_ROT_STACK = True
 
 class GivensLayer(BaseTunerLayer):
     # All names of layers that may contain (trainable) adapter weights
@@ -283,12 +287,19 @@ class Linear(nn.Module, GivensLayer):
             if self.strict_oft[adapter]:
                 cos_vec = torch.ones(self.in_features, dtype=base_layer.weight.dtype, device=device)
                 sin_vec = torch.zeros(self.in_features, dtype=base_layer.weight.dtype, device=device)
-                cos_vec[:step_size*2*cur_cnt:step_size*2] = torch.cos(all_theta[flag:flag+cur_cnt])
-                cos_vec[step_size:step_size*(2*cur_cnt+1):step_size*2] = torch.cos(all_theta[flag:flag+cur_cnt])
-                sin_vec[:step_size*2*cur_cnt:step_size*2] = torch.sin(all_theta[flag:flag+cur_cnt])
-                sin_vec[step_size:step_size*(2*cur_cnt+1):step_size*2] = torch.sin(all_theta[flag:flag+cur_cnt])
+                # cos_vec[:step_size*2*cur_cnt:step_size*2] = torch.cos(all_theta[flag:flag+cur_cnt])
+                # cos_vec[step_size:step_size*(2*cur_cnt+1):step_size*2] = torch.cos(all_theta[flag:flag+cur_cnt])
+                # sin_vec[:step_size*2*cur_cnt:step_size*2] = torch.sin(all_theta[flag:flag+cur_cnt])
+                # sin_vec[step_size:step_size*(2*cur_cnt+1):step_size*2] = torch.sin(all_theta[flag:flag+cur_cnt])
+                theta_slice = all_theta[flag:flag+cur_cnt]
+                cos_slice, sin_slice = torch.cos(theta_slice), torch.sin(theta_slice)
+                cos_vec[::step_size*2][:cur_cnt] = cos_slice
+                cos_vec[step_size::step_size*2][:cur_cnt] = cos_slice
+                sin_vec[::step_size*2][:cur_cnt] = sin_slice
+                sin_vec[step_size::step_size*2][:cur_cnt] = sin_slice
 
             else:
+                print("!!!!ATTENTION!!!DIFFER_BRACH!")
                 cos_vec = torch.ones(self.in_features).to(output_tensor.dtype)
                 sin_vec = torch.zeros(self.in_features).to(output_tensor.dtype)
                 cos_vec[:step_size*2*cur_cnt:step_size*2] = self.givens_soft[adapter][flag:flag+cur_cnt,0,0].to(cos_vec.dtype)
@@ -365,12 +376,19 @@ class Linear(nn.Module, GivensLayer):
                     if self.strict_oft[active_adapter]:
                         cos_vec = torch.ones(self.in_features, dtype=base_layer.weight.dtype, device=device)
                         sin_vec = torch.zeros(self.in_features, dtype=base_layer.weight.dtype, device=device)
-                        cos_vec[:step_size*2*cur_cnt:step_size*2] = torch.cos(all_theta[flag:flag+cur_cnt])
-                        cos_vec[step_size:step_size*(2*cur_cnt+1):step_size*2] = torch.cos(all_theta[flag:flag+cur_cnt])
-                        sin_vec[:step_size*2*cur_cnt:step_size*2] = torch.sin(all_theta[flag:flag+cur_cnt])
-                        sin_vec[step_size:step_size*(2*cur_cnt+1):step_size*2] = torch.sin(all_theta[flag:flag+cur_cnt])
+                        # cos_vec[:step_size*2*cur_cnt:step_size*2] = torch.cos(all_theta[flag:flag+cur_cnt])
+                        # cos_vec[step_size:step_size*(2*cur_cnt+1):step_size*2] = torch.cos(all_theta[flag:flag+cur_cnt])
+                        # sin_vec[:step_size*2*cur_cnt:step_size*2] = torch.sin(all_theta[flag:flag+cur_cnt])
+                        # sin_vec[step_size:step_size*(2*cur_cnt+1):step_size*2] = torch.sin(all_theta[flag:flag+cur_cnt])
+                        theta_slice = all_theta[flag:flag+cur_cnt]
+                        cos_slice, sin_slice = torch.cos(theta_slice), torch.sin(theta_slice)
+                        cos_vec[::step_size*2][:cur_cnt] = cos_slice
+                        cos_vec[step_size::step_size*2][:cur_cnt] = cos_slice
+                        sin_vec[::step_size*2][:cur_cnt] = sin_slice
+                        sin_vec[step_size::step_size*2][:cur_cnt] = sin_slice
 
                     else:
+                        print("!!!!ATTENTION!!!DIFFER_BRACH!")
                         cos_vec = torch.ones(self.in_features, dtype=base_layer.weight.dtype, device=device)
                         sin_vec = torch.zeros(self.in_features, dtype=base_layer.weight.dtype, device=device)
                         cos_vec[:step_size*2*cur_cnt:step_size*2] = self.givens_soft[active_adapter][flag:flag+cur_cnt,0,0].to(cos_vec.dtype)
@@ -382,8 +400,10 @@ class Linear(nn.Module, GivensLayer):
                     flag = flag + cur_cnt
                     cur_cnt = cur_cnt + left
 
-                    sin_list.insert(0, sin_vec)
-                    cos_list.insert(0, cos_vec)
+                    # sin_list.insert(0, sin_vec)
+                    # cos_list.insert(0, cos_vec)
+                    sin_list.append(sin_vec)   # 改用顺序堆栈
+                    cos_list.append(cos_vec)
 
                     # weight_cos = base_layer.weight.data
                     # weight_sin = torch.stack([-base_layer.weight.data[,1::2], base_layer.weight.data[:,::2]],dim=-1).reshape(base_layer.weight.data.shape)
@@ -399,23 +419,45 @@ class Linear(nn.Module, GivensLayer):
                 # result = F.linear(x.to(rot_weight.dtype), rot_weight.T)
                 # result = result.to(previous_dtype)
                 # 单词旋转部分，主要用cpu优化这部分
-                for cos_v, sin_v in zip(cos_list, sin_list):
-                    # print(f"current_device: {x.device.type}")
-                    # print(f"_HAS_CPU_ROT: {_HAS_CPU_ROT}")
-                    if _HAS_CPU_ROT and x.device.type == "cpu":
-                        # ---------- 兼容 3D 形状 ----------
-                        orig_shape = x.shape                 # (B, S, D) 或 (B, D)
-                        if x.dim() > 2:                      # 展平成 2D
-                            x_flat = x.reshape(-1, self.in_features)
-                            x_flat = _rot_native(x_flat, cos_v, sin_v)
-                            x = x_flat.reshape(orig_shape)   # 还原形状
+                # for cos_v, sin_v in zip(cos_list, sin_list):
+                #     # print(f"current_device: {x.device.type}")
+                #     # print(f"_HAS_CPU_ROT: {_HAS_CPU_ROT}")
+                #     if _HAS_CPU_ROT and x.device.type == "cpu":
+                #         # ---------- 兼容 3D 形状 ----------
+                #         orig_shape = x.shape                 # (B, S, D) 或 (B, D)
+                #         if x.dim() > 2:                      # 展平成 2D
+                #             x_flat = x.reshape(-1, self.in_features)
+                #             x_flat = _rot_native(x_flat, cos_v, sin_v)
+                #             x = x_flat.reshape(orig_shape)   # 还原形状
+                #         else:
+                #             x = _rot_native(x, cos_v, sin_v)
+                #     else:
+                #         # raise ImportError("CPU_ROT模块导入失败") # only for test, hard coding
+                #         x_cos = x
+                #         x_sin = torch.stack((-x[...,1::2], x[...,::2]), dim=-1).reshape(x.shape)
+                #         x = x_cos * cos_v + x_sin * sin_v
+                
+                if _HAS_CPU_ROT_STACK and x.device.type == "cpu":
+                    cos_stack = torch.stack(cos_list)   # [K, D]
+                    sin_stack = torch.stack(sin_list)
+                    x = _rot_stack_native(x, cos_stack, sin_stack)
+                else:                                   # GPU 或没有 stack-kernel 时
+                    for cos_v, sin_v in zip(cos_list, sin_list):
+                        if _HAS_CPU_ROT and x.device.type == "cpu":
+                            # ─── 仍在 CPU，可安全调用单次旋转 kernel ───
+                            orig = x.shape
+                            x_flat = x.reshape(-1, self.in_features).contiguous()
+                            # cos/sin 也须在 CPU
+                            x_flat = _rot_native(x_flat,
+                                                  cos_v.to(x_flat.device),
+                                                  sin_v.to(x_flat.device))
+                            x = x_flat.reshape(orig)
                         else:
-                            x = _rot_native(x, cos_v, sin_v)
-                    else:
-                        # raise ImportError("CPU_ROT模块导入失败") # only for test, hard coding
-                        x_cos = x
-                        x_sin = torch.stack((-x[...,1::2], x[...,::2]), dim=-1).reshape(x.shape)
-                        x = x_cos * cos_v + x_sin * sin_v
+                            # ─── GPU fallback：纯 PyTorch 公式 ───
+                            x_cos = x
+                            x_sin = torch.stack((-x[..., 1::2], x[..., ::2]),
+                                                dim=-1).reshape_as(x)
+                            x = x_cos * cos_v + x_sin * sin_v
                 
                 if active_adapter in self.givens_scaler.keys():
                     x = x * self.givens_scaler[active_adapter]

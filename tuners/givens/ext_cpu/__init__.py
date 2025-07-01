@@ -1,4 +1,5 @@
-import importlib, pathlib, torch
+import importlib, pathlib, torch, types
+from types import ModuleType
 
 # 1) 直接尝试 import 已安装的 goft_cpu_ext
 try:
@@ -16,3 +17,4 @@ except ImportError:
 
 # 暴露给外部
 rot_autograd = _mod.rot_autograd
+rot_stack_autograd = getattr(_mod, "rot_stack_autograd", None)

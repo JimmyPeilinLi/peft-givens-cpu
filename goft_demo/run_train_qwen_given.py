@@ -52,10 +52,10 @@ class TorchProfilerCallback(TrainerCallback):
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model_dir",
-                    default="/home/lpl/peft_givens_cpu/models/Qwen2.5-0.5B",
+                    default="/home/lpl/peft_givens_cpu/models/Qwen2.5-1.5B",
                     help="本地 Qwen2.5-3B 路径")
     ap.add_argument("--config",
-                    default="/home/lpl/peft_givens_cpu/goft_demo/config_qwen.json",
+                    default="/home/lpl/peft_givens_cpu/goft_demo/config_qwen_given.json",
                     help="GivensConfig json")
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--bs", type=int, default=1,
@@ -193,7 +193,7 @@ def main():
         save_strategy="no",
         fp16=False,
         bf16=False,
-        no_cuda=True,
+        no_cuda=(device=="cpu"),
         dataloader_num_workers=4, # 小规模并行加在数据，不大量fork worker
         max_steps=10,
         gradient_accumulation_steps=1,
@@ -206,7 +206,7 @@ def main():
         train_dataset=ds_train,
         eval_dataset=None,
         data_collator=collator,
-        callbacks=[TorchProfilerCallback("/home/lpl/peft_givens_cpu/log_cpu")],
+        # callbacks=[TorchProfilerCallback("/home/lpl/peft_givens_cpu/log_cpu")],
     )
 
     print("---------------------START TRAINING----------------------")
